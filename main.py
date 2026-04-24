@@ -1,29 +1,3 @@
-"""
-╔══════════════════════════════════════════════════════════════════╗
-║       WYCKOFF ACCUMULATION ALGO — ANGEL ONE SMARTAPI v3         ║
-║              with REAL CHARGES + SLIPPAGE                       ║
-║                    by Aindrik                                   ║
-╚══════════════════════════════════════════════════════════════════╝
-
-FILTERS:
-  1. Context   → Price ≤ SMA200 * 0.95
-  2. Effort    → Volume > Avg100Volume * 3
-  3. Result    → Spread ≤ Avg100Spread * 0.5
-  4. Confirm   → (Close - Low) / Spread > 0.5
-
-SL     → Below signal candle low
-TARGET → Test 1.5:1, 2:1, 3:1 R:R
-
-CHARGES MODELLED (NSE Delivery):
-  - Brokerage    : ₹0 (Angel One delivery is free)
-  - STT          : 0.1% on buy + sell turnover
-  - Exchange fee : 0.00335% on turnover
-  - GST          : 18% on brokerage + exchange fee
-  - SEBI charges : ₹10 per crore turnover
-  - Stamp duty   : 0.015% on buy side only
-  - Slippage     : configurable % on both entry and exit
-"""
-
 import requests
 import pandas as pd
 import numpy as np
@@ -34,9 +8,6 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-# ─────────────────────────────────────────────
-#  ⚙️  CONFIG — FILL THESE IN
-# ─────────────────────────────────────────────
 API_KEY      = "your_api_key_here"
 CLIENT_ID    = "your_client_id_here"
 PASSWORD     = "your_password_here"
@@ -55,9 +26,6 @@ NSE_STOCKS = [
     "BRITANNIA", "ITC"
 ]
 
-# ─────────────────────────────────────────────
-#  PARAMETERS
-# ─────────────────────────────────────────────
 LOOKBACK        = 100
 SMA_PERIOD      = 200
 DISCOUNT_FACTOR = 0.95
@@ -65,82 +33,46 @@ VOLUME_MULT     = 3.0
 SPREAD_FACTOR   = 0.5
 CLOSE_POS_MIN   = 0.5
 RR_RATIOS       = [1.5, 2.0, 3.0]
-
-# Trade size for realistic charge calculation
-TRADE_VALUE_INR = 50000   # ₹50,000 per trade (change to your actual size)
-
-# Slippage assumption
-# 0.1% = you buy 0.1% above close price, sell 0.1% below target/SL
+TRADE_VALUE_INR = 50000
 SLIPPAGE_PCT    = 0.001
 
 
-# ─────────────────────────────────────────────
-#  💰 CHARGES CALCULATOR (NSE Delivery)
-# ─────────────────────────────────────────────
 def calculate_charges(buy_price, sell_price, quantity):
-    """
-    Returns total charges in ₹ for a delivery trade on NSE.
-    Angel One = ₹0 brokerage on delivery.
-    """
-    buy_turnover  = buy_price  * quantity
-    sell_turnover = sell_price * quantity
+    buy_turnover   = buy_price  * quantity
+    sell_turnover  = sell_price * quantity
     total_turnover = buy_turnover + sell_turnover
 
-    # STT: 0.1% on both buy and sell for delivery
-    stt = total_turnover * 0.001
-
-    # Exchange transaction charges: 0.00335% of total turnover
+    stt              = total_turnover * 0.001
     exchange_charges = total_turnover * 0.0000335
+    brokerage        = 0
+    gst              = (brokerage + exchange_charges) * 0.18
+    sebi             = total_turnover * 0.000001
+    stamp            = buy_turnover * 0.00015
 
-    # Brokerage = ₹0 for Angel One delivery
-    brokerage = 0
-
-    # GST: 18% on (brokerage + exchange charges)
-    gst = (brokerage + exchange_charges) * 0.18
-
-    # SEBI charges: ₹10 per crore = 0.000001 of turnover
-    sebi = total_turnover * 0.000001
-
-    # Stamp duty: 0.015% on buy side only
-    stamp = buy_turnover * 0.00015
-
-    total_charges = stt + exchange_charges + gst + sebi + stamp
-    return round(total_charges, 4)
+    return round(stt + exchange_charges + gst + sebi + stamp, 4)
 
 
-def apply_slippage(entry_price, exit_price, side="buy_then_sell"):
-    """
-    Adjusts prices for slippage:
-    - Buy fills HIGHER than signal price
-    - Sell fills LOWER than target/SL price
-    """
-    real_entry = entry_price * (1 + SLIPPAGE_PCT)   # paid more on entry
-    real_exit  = exit_price  * (1 - SLIPPAGE_PCT)   # got less on exit
+def apply_slippage(entry_price, exit_price):
+    real_entry = entry_price * (1 + SLIPPAGE_PCT)
+    real_exit  = exit_price  * (1 - SLIPPAGE_PCT)
     return real_entry, real_exit
 
 
-# ─────────────────────────────────────────────
-#  NET RETURN AFTER CHARGES + SLIPPAGE
-# ─────────────────────────────────────────────
 def net_return(entry, exit_price, trade_value=TRADE_VALUE_INR):
-    """Returns net P&L % after slippage + all charges."""
     real_entry, real_exit = apply_slippage(entry, exit_price)
 
     quantity = int(trade_value / real_entry)
     if quantity == 0:
         return 0.0
 
-    gross_pnl  = (real_exit - real_entry) * quantity
-    charges    = calculate_charges(real_entry, real_exit, quantity)
-    net_pnl    = gross_pnl - charges
+    gross_pnl   = (real_exit - real_entry) * quantity
+    charges     = calculate_charges(real_entry, real_exit, quantity)
+    net_pnl     = gross_pnl - charges
     net_ret_pct = (net_pnl / (real_entry * quantity)) * 100
 
     return round(net_ret_pct, 3)
 
 
-# ─────────────────────────────────────────────
-#  LOGIN
-# ─────────────────────────────────────────────
 def login():
     totp = pyotp.TOTP(TOTP_SECRET).now()
     obj  = SmartConnect(api_key=API_KEY)
@@ -151,25 +83,19 @@ def login():
     return obj
 
 
-# ─────────────────────────────────────────────
-#  SCRIP MASTER — symbol → token
-# ─────────────────────────────────────────────
 def get_symbol_tokens():
     url  = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
     resp = requests.get(url, timeout=30)
     data = resp.json()
     token_map = {}
     for item in data:
-        if item.get("exch_seg") == "NSE" and item.get("symbol","").endswith("-EQ"):
+        if item.get("exch_seg") == "NSE" and item.get("symbol", "").endswith("-EQ"):
             name = item["symbol"].replace("-EQ", "")
             token_map[name] = item["token"]
     print(f"  ✅ Scrip master loaded — {len(token_map)} NSE EQ tokens")
     return token_map
 
 
-# ─────────────────────────────────────────────
-#  FETCH CANDLES
-# ─────────────────────────────────────────────
 def get_candles(obj, token, days=900):
     to_date   = datetime.today()
     from_date = to_date - timedelta(days=days)
@@ -187,18 +113,15 @@ def get_candles(obj, token, days=900):
         data = resp.get("data", [])
         if not data:
             return None
-        df = pd.DataFrame(data, columns=["datetime","open","high","low","close","volume"])
+        df = pd.DataFrame(data, columns=["datetime", "open", "high", "low", "close", "volume"])
         df["datetime"] = pd.to_datetime(df["datetime"])
         df = df.set_index("datetime").sort_index()
-        df.columns = ["Open","High","Low","Close","Volume"]
+        df.columns = ["Open", "High", "Low", "Close", "Volume"]
         return df.apply(pd.to_numeric)
     except:
         return None
 
 
-# ─────────────────────────────────────────────
-#  WYCKOFF FILTER CHECK
-# ─────────────────────────────────────────────
 def check_wyckoff(row, sma200, avg_vol, avg_spread):
     spread = row["High"] - row["Low"]
     if spread == 0:
@@ -224,9 +147,6 @@ def check_wyckoff(row, sma200, avg_vol, avg_spread):
     return (f1 and f2 and f3 and f4), details
 
 
-# ─────────────────────────────────────────────
-#  BACKTEST
-# ─────────────────────────────────────────────
 def backtest_stock(symbol, df):
     if len(df) < SMA_PERIOD + LOOKBACK + 30:
         return []
@@ -279,18 +199,13 @@ def backtest_stock(symbol, df):
             if exit_price is None:
                 exit_price = df["Close"].iloc[min(i + 30, len(df) - 1)]
 
-            outcome  = "WIN" if hit_target else ("LOSS" if hit_sl else "OPEN")
-
-            # Gross return
+            outcome   = "WIN" if hit_target else ("LOSS" if hit_sl else "OPEN")
             gross_ret = round((exit_price - entry) / entry * 100, 3)
-
-            # Net return after charges + slippage
             net_ret   = net_return(entry, exit_price, TRADE_VALUE_INR)
 
-            # Charges amount
             real_entry, real_exit = apply_slippage(entry, exit_price)
-            qty      = int(TRADE_VALUE_INR / real_entry)
-            charges  = calculate_charges(real_entry, real_exit, qty) if qty > 0 else 0
+            qty     = int(TRADE_VALUE_INR / real_entry)
+            charges = calculate_charges(real_entry, real_exit, qty) if qty > 0 else 0
 
             rr_results[f"rr{rr}_outcome"]    = outcome
             rr_results[f"rr{rr}_gross_ret"]  = gross_ret
@@ -311,9 +226,6 @@ def backtest_stock(symbol, df):
     return results
 
 
-# ─────────────────────────────────────────────
-#  LIVE SCAN
-# ─────────────────────────────────────────────
 def live_scan(symbol, df):
     if len(df) < SMA_PERIOD + LOOKBACK:
         return None
@@ -332,25 +244,22 @@ def live_scan(symbol, df):
     if not signal:
         return None
 
-    entry = row["Close"]
-    sl    = row["Low"]
-    risk  = entry - sl
-
-    # Real entry after slippage
+    entry      = row["Close"]
+    sl         = row["Low"]
+    risk       = entry - sl
     real_entry = entry * (1 + SLIPPAGE_PCT)
 
-    # Charges estimate for each target
     targets_info = {}
     for rr in RR_RATIOS:
-        target     = entry + risk * rr
-        real_exit  = target * (1 - SLIPPAGE_PCT)
-        qty        = int(TRADE_VALUE_INR / real_entry)
-        charges    = calculate_charges(real_entry, real_exit, qty) if qty > 0 else 0
-        net_ret    = net_return(entry, target, TRADE_VALUE_INR)
+        target    = entry + risk * rr
+        real_exit = target * (1 - SLIPPAGE_PCT)
+        qty       = int(TRADE_VALUE_INR / real_entry)
+        charges   = calculate_charges(real_entry, real_exit, qty) if qty > 0 else 0
+        net_ret   = net_return(entry, target, TRADE_VALUE_INR)
         targets_info[rr] = {
-            "target":   round(target, 2),
-            "net_ret":  net_ret,
-            "charges":  round(charges, 2)
+            "target":  round(target, 2),
+            "net_ret": net_ret,
+            "charges": round(charges, 2)
         }
 
     return {
@@ -365,9 +274,6 @@ def live_scan(symbol, df):
     }
 
 
-# ─────────────────────────────────────────────
-#  PRINT BACKTEST SUMMARY
-# ─────────────────────────────────────────────
 def print_backtest_summary(bt_df):
     print(f"\n  Total signals (historical) : {len(bt_df)}")
     print(f"  Stocks with signals        : {bt_df['symbol'].nunique()}\n")
@@ -416,9 +322,6 @@ def print_backtest_summary(bt_df):
         print(f"  💰 On ₹{TRADE_VALUE_INR:,} per trade = ₹{round(best_expectancy/100*TRADE_VALUE_INR,2)} avg net profit per signal")
 
 
-# ─────────────────────────────────────────────
-#  MAIN
-# ─────────────────────────────────────────────
 def main():
     print("╔══════════════════════════════════════════════════════╗")
     print("║   WYCKOFF SCANNER v3 — ANGEL ONE + CHARGES + SLIP   ║")
@@ -448,7 +351,7 @@ def main():
             failed.append(symbol)
             continue
 
-        bt   = backtest_stock(symbol, df)
+        bt = backtest_stock(symbol, df)
         all_backtest.extend(bt)
 
         live = live_scan(symbol, df)
@@ -457,7 +360,6 @@ def main():
 
     print(" " * 40)
 
-    # ── BACKTEST ─────────────────────────────
     print("\n" + "═" * 75)
     print("  📊  BACKTEST — GROSS vs NET (after charges + slippage)")
     print("═" * 75)
@@ -470,7 +372,6 @@ def main():
     else:
         print("  No historical signals found.")
 
-    # ── LIVE SIGNALS ─────────────────────────
     print("\n" + "═" * 75)
     print("  🚨  LIVE SIGNALS — TODAY (net of charges + slippage)")
     print("═" * 75)
@@ -504,5 +405,5 @@ def main():
     print("═" * 75 + "\n")
 
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     main()
